@@ -42,9 +42,9 @@ class GameState:
         self.map_y = 0
         self.direction = 8
 
-        self.hp = 1000
-        self.attack = 100
-        self.defense = 100
+        self.hp = 400
+        self.attack = 10
+        self.defense = 10
         self.gold = 0
         self.yellow_keys = 0
         self.blue_keys = 0
