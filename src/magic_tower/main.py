@@ -54,6 +54,7 @@ class MagicTowerApp:
         self.shake_timer = 0
         self.flash_timer = 0
         self.audio = AudioSystem()
+        self.audio.init()
         self.opening_page = 0
         self.opening_alpha = 0
         self.opening_fade_in = True
@@ -65,8 +66,8 @@ class MagicTowerApp:
         self.message_text = None
         self.status_text = "Welcome to Magic Tower!"
         self.battle_result = None
-        self.audio.init()
-        self.audio.play_bgm_for_floor(1)
+        if self.audio._initialized:
+            self.audio.play_bgm_for_floor(1)
 
     def run(self):
         self.sprites.load_all()
