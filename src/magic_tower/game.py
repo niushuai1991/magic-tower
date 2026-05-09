@@ -116,6 +116,8 @@ class GameState:
             floor_obj = FLOOR_OBJECTS[floor_num]
             for ly in range(13):
                 for lx in range(13):
+                    if ly == 0 or ly == 12 or lx == 0 or lx == 12:
+                        continue
                     gy = my * 13 + ly
                     gx = mx * 13 + lx
                     if gy < 78 and gx < 130:
