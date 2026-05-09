@@ -1,6 +1,7 @@
 import sys
 import os
 import pygame
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -16,7 +17,13 @@ from magic_tower.interaction import (
     execute_altar, execute_buy, execute_sell, execute_score,
 )
 from magic_tower.items import use_item
-from magic_tower.object_data import MESSAGES
+from magic_tower.object_data import MESSAGES, MAP_ATTR
+from magic_tower.events import (
+    check_3f_trigger, trigger_3f_event, poll_3f_events,
+    finish_madoushi_anim, finish_zeno_anim, finish_teleport,
+    poll_openning_events, ANIM_FRAMES, ANIM_FRAME_MS,
+    get_3f_flag, get_event_counter, set_event_counter,
+)
 
 MOVE_DELAY_INITIAL = 8
 MOVE_DELAY_REPEAT = 4
@@ -59,6 +66,12 @@ class MagicTowerApp:
         self.opening_alpha = 0
         self.opening_fade_in = True
 
+        self.anim_state = None
+        self.anim_frame = 0
+        self.anim_start_time = 0
+        self.anim_saved_gx = 0
+        self.anim_saved_gy = 0
+
     def new_game(self):
         self.game = GameState()
         self.game.load_initial_maps()
@@ -66,6 +79,7 @@ class MagicTowerApp:
         self.message_text = None
         self.status_text = "Welcome to Magic Tower!"
         self.battle_result = None
+        self.anim_state = None
         if self.audio._initialized:
             self.audio.play_bgm_for_floor(1)
 
@@ -92,11 +106,101 @@ class MagicTowerApp:
             if self.game and (self.game.move_ox or self.game.move_oy):
                 self._animate_movement()
 
+            self._poll_animations()
             self._render()
             pygame.display.flip()
             clock.tick(60)
 
         pygame.quit()
+
+    def _poll_animations(self):
+        if self.game is None or self.anim_state is None:
+            return
+
+        elapsed = (time.monotonic() - self.anim_start_time) * 1000
+        frame = int(elapsed // ANIM_FRAME_MS)
+
+        if self.anim_state == "zeno":
+            if frame < ANIM_FRAMES:
+                self.anim_frame = frame
+            else:
+                finish_zeno_anim(self.game)
+                self.anim_state = None
+                msg = trigger_3f_event(self.game)
+                if msg:
+                    self.message_text = msg
+
+        elif self.anim_state == "madoushi":
+            if frame < ANIM_FRAMES:
+                self.anim_frame = frame
+            else:
+                finish_madoushi_anim(self.game)
+                self.anim_state = None
+                self._advance_3f_chain()
+
+        elif self.anim_state == "teleport_flash":
+            if frame < 6:
+                self.anim_frame = frame
+            else:
+                result = finish_teleport(self.game)
+                self.anim_state = None
+                if result and result[0] == "openning_anim":
+                    self.anim_state = "openning"
+                    self.anim_frame = 0
+                    self.anim_start_time = time.monotonic()
+
+        elif self.anim_state == "openning":
+            if frame < ANIM_FRAMES:
+                self.anim_frame = frame
+            else:
+                self.anim_state = None
+                self.state = "openning_seq"
+                self._advance_openning_chain()
+
+    def _advance_3f_chain(self):
+        if self.game is None:
+            return
+        result = poll_3f_events(self.game, self.message_text is not None)
+        if result is None:
+            return
+        if result[0] == "message":
+            self.message_text = result[1]
+        elif result[0] == "madoushi_anim":
+            self.anim_state = "madoushi"
+            self.anim_frame = 0
+            self.anim_start_time = time.monotonic()
+            self.audio.play_sfx(6)
+        elif result[0] == "teleport":
+            self.anim_state = "teleport_flash"
+            self.anim_frame = 0
+            self.anim_start_time = time.monotonic()
+            self.audio.play_sfx(10)
+
+    def _advance_openning_chain(self):
+        if self.game is None:
+            return
+        result = poll_openning_events(self.game, self.message_text is not None)
+        if result is None:
+            return
+        if result[0] == "message":
+            self.message_text = result[1]
+        elif result[0] == "openning_done":
+            self._teleport_to_floor2()
+            self.status_text = ""
+            self.state = "playing"
+            self.audio.play_bgm_for_floor(2)
+
+    def _teleport_to_floor2(self):
+        tile_attr = MAP_ATTR.get(117)
+        if tile_attr:
+            jx = tile_attr[16] if len(tile_attr) > 16 else 0
+            jy = tile_attr[17] if len(tile_attr) > 17 else 0
+            self.game.map_x = jx // 13
+            self.game.map_y = jy // 13
+            self.game.chara_x = (jx % 13) * 5
+            self.game.chara_y = (jy % 13) * 5
+            self.game.direction = 8
+        set_event_counter(self.game, 0)
 
     def _render(self):
         if self.state == "title":
@@ -109,6 +213,22 @@ class MagicTowerApp:
             self.renderer.render_opening(
                 self.screen, self.sprites, self.opening_page, self.opening_alpha
             )
+        elif self.anim_state == "zeno" and self.game:
+            self.renderer.render_zeno_frame(self.screen, self.game, self.anim_frame)
+        elif self.anim_state == "madoushi" and self.game:
+            self.renderer.render_madoushi_frame(self.screen, self.game, self.anim_frame)
+        elif self.anim_state == "teleport_flash" and self.game:
+            self.renderer.render_teleport_flash(self.screen, self.game, self.anim_frame)
+        elif self.anim_state == "openning":
+            self.renderer.render_openning_zeno_frame(self.screen, self.anim_frame)
+        elif self.state == "openning_seq":
+            w, h = self.screen.get_size()
+            buf = pygame.Surface((820, 520))
+            buf.fill((0, 0, 0))
+            if self.message_text:
+                self.renderer.draw_message_box(buf, self.message_text)
+            scaled = pygame.transform.smoothscale(buf, (w, h))
+            self.screen.blit(scaled, (0, 0))
         elif self.state in ("playing", "altar_menu", "yesno"):
             self.renderer.render_frame(
                 self.screen, self.game, self.battle_result,
@@ -170,6 +290,11 @@ class MagicTowerApp:
                 self.opening_fade_in = True
                 if self.opening_page >= len(self.sprites.opening_imgs):
                     self.new_game()
+        elif self.state == "openning_seq":
+            if key in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_z):
+                if self.message_text:
+                    self.message_text = None
+                    self._advance_openning_chain()
         elif self.state == "altar_menu":
             self._handle_altar_key(key)
         elif self.state == "yesno":
@@ -200,9 +325,15 @@ class MagicTowerApp:
             self.status_text = f"Language: {lang_names[self.game.language]}"
             return
 
+        if self.anim_state is not None:
+            return
+
         if self.message_text:
             if key in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_z):
                 self.message_text = None
+                flag = get_3f_flag(self.game) if self.game else 0
+                if 1 <= flag <= 4:
+                    self._advance_3f_chain()
             return
 
         if key == pygame.K_RETURN:
@@ -346,7 +477,7 @@ class MagicTowerApp:
                         self.status_text = f"Loaded save {slot}"
 
     def _handle_held_keys(self):
-        if self.message_text or self.state != "playing":
+        if self.message_text or self.state != "playing" or self.anim_state is not None:
             return
 
         if self.move_timer > 0:
@@ -388,6 +519,13 @@ class MagicTowerApp:
                 if self.game.game_over:
                     self.state = "game_over"
                     return
+
+            if check_3f_trigger(self.game):
+                self.anim_state = "zeno"
+                self.anim_frame = 0
+                self.anim_start_time = time.monotonic()
+                self.audio.play_sfx(6)
+                return
 
         elif isinstance(result, tuple):
             if result[0] == "battle":

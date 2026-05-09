@@ -1,4 +1,5 @@
 import pygame
+import numpy as np
 from .sprites import TILE_SIZE
 from .game import MAP_WALL, ATR_CROP1, ATR_CROP2, ATR_TYPE, ATR_ENERGY, ATR_STRENGTH, ATR_DEFENCE, ATR_GOLD, ATR_STRING
 from .object_data import OBJECT_ATTR, MAP_ATTR, MESSAGES
@@ -230,6 +231,9 @@ class Renderer:
                 txt = self.font.render(line, True, (255, 255, 255))
                 buf.blit(txt, (box_x + 10, box_y + 10 + i * 22))
 
+    def draw_message_box(self, buf, text):
+        self._draw_message_box(buf, text)
+
     def _draw_status_bar(self, buf, text):
         bar_y = BASE_HEIGHT - 20
         pygame.draw.rect(buf, (30, 30, 80), (0, bar_y, BASE_WIDTH, 20))
@@ -372,4 +376,139 @@ class Renderer:
             overlay.blit(no_txt, (box_x + 300, box_y + box_h - 45))
 
         scaled = pygame.transform.smoothscale(overlay, (w, h))
+        surface.blit(scaled, (0, 0))
+
+    def _get_mask_frame(self, frame_idx):
+        if self.sprites.chara_sheet is None:
+            return None
+        col = frame_idx % 8
+        row = frame_idx // 8
+        return self.sprites.chara_sheet.subsurface(
+            pygame.Rect(col * 40, row * 40, 40, 40)
+        ).copy()
+
+    def _mask_blend_tile(self, mask_frame, floor_surf, monster_surf):
+        mask_arr = pygame.surfarray.array3d(mask_frame)
+        floor_arr = pygame.surfarray.array3d(floor_surf)
+        mon_arr = pygame.surfarray.array3d(monster_surf)
+        bg_color = mask_arr[0, 0]
+        result = np.where(mask_arr == bg_color, floor_arr, mon_arr)
+        return pygame.surfarray.make_surface(result)
+
+    def render_zeno_frame(self, surface, game, frame):
+        if frame < 0 or frame >= 16:
+            return
+        gx, gy = game.get_global_pos()
+        local_x = gx - game.map_x * 13
+        local_y = gy - game.map_y * 13 - 2
+        px = PANEL_LEFT_W + local_x * 40
+        py = local_y * 40
+        mask_frame = self._get_mask_frame(frame)
+        if mask_frame is None:
+            return
+        floor_tile = self.sprites.get_tile(MAP_ATTR.get(1, [0, 0])[1])
+        obj_id = 57
+        crop1 = OBJECT_ATTR[obj_id][1]
+        crop2 = OBJECT_ATTR[obj_id][2]
+        mon_frame = self.sprites.get_tile(crop1 if frame < 8 or frame % 2 == 0 else crop2)
+        blended = self._mask_blend_tile(mask_frame, floor_tile, mon_frame)
+        w, h = surface.get_size()
+        buf = pygame.Surface((BASE_WIDTH, BASE_HEIGHT), pygame.SRCALPHA)
+        buf.fill((0, 0, 0, 0))
+        self._draw_map(buf, game)
+        self._draw_character(buf, game)
+        buf.blit(blended, (px, py))
+        scaled = pygame.transform.smoothscale(buf, (w, h))
+        surface.blit(scaled, (0, 0))
+
+    def render_madoushi_frame(self, surface, game, frame):
+        if frame < 0 or frame >= 16:
+            return
+        gx, gy = game.get_global_pos()
+        center_lx = gx - game.map_x * 13
+        center_ly = gy - game.map_y * 13
+        mask_frame = self._get_mask_frame(frame)
+        if mask_frame is None:
+            return
+        floor_tile = self.sprites.get_tile(MAP_ATTR.get(1, [0, 0])[1])
+        obj_id = 58
+        crop1 = OBJECT_ATTR[obj_id][1]
+        crop2 = OBJECT_ATTR[obj_id][2]
+        mon_frame = self.sprites.get_tile(crop1 if frame < 8 or frame % 2 == 0 else crop2)
+        blended = self._mask_blend_tile(mask_frame, floor_tile, mon_frame)
+        offsets = [(0, -1), (-1, 0), (1, 0), (0, 1)]
+        w, h = surface.get_size()
+        buf = pygame.Surface((BASE_WIDTH, BASE_HEIGHT), pygame.SRCALPHA)
+        buf.fill((0, 0, 0, 0))
+        self._draw_map(buf, game)
+        for dx, dy in offsets:
+            lx = center_lx + dx
+            ly = center_ly + dy
+            if 0 <= lx < 13 and 0 <= ly < 13:
+                px_pos = PANEL_LEFT_W + lx * 40
+                py_pos = ly * 40
+                buf.blit(blended, (px_pos, py_pos))
+        scaled = pygame.transform.smoothscale(buf, (w, h))
+        surface.blit(scaled, (0, 0))
+
+    def render_teleport_flash(self, surface, game, frame):
+        gx, gy = game.get_global_pos()
+        local_x = gx - game.map_x * 13
+        local_y = gy - game.map_y * 13
+        px = PANEL_LEFT_W + local_x * 40
+        py = local_y * 40
+        w, h = surface.get_size()
+        buf = pygame.Surface((BASE_WIDTH, BASE_HEIGHT), pygame.SRCALPHA)
+        buf.fill((0, 0, 0, 0))
+        self._draw_map(buf, game)
+        if frame % 2 == 0:
+            chara_dir = game.direction
+            if chara_dir == 8:
+                crop_idx = 0
+            elif chara_dir == 2:
+                crop_idx = 2
+            elif chara_dir == 4:
+                crop_idx = 4
+            elif chara_dir == 6:
+                crop_idx = 6
+            else:
+                crop_idx = 2
+            chara_surf = self.sprites.get_chara(crop_idx // 2, 0)
+            buf.blit(chara_surf, (px, py))
+            flash_surf = self.sprites.get_tile(25)
+            if flash_surf:
+                buf.blit(flash_surf, (px, py))
+        scaled = pygame.transform.smoothscale(buf, (w, h))
+        surface.blit(scaled, (0, 0))
+
+    def render_openning_zeno_frame(self, surface, frame):
+        if frame < 0 or frame >= 16 or self.sprites.chara_sheet is None:
+            return
+        if not self.sprites.opening_imgs:
+            return
+        opening_img = self.sprites.opening_imgs[0]
+        ow, oh = opening_img.get_size()
+        mask_frame = self._get_mask_frame(frame)
+        if mask_frame is None:
+            return
+        mask_arr = pygame.surfarray.array3d(mask_frame)
+        bg_color = mask_arr[0, 0]
+        floor_tile = self.sprites.get_tile(MAP_ATTR.get(1, [0, 0])[1])
+        floor_arr = pygame.surfarray.array3d(floor_tile)
+        bg_pixel = floor_arr[0, 0]
+        opening_arr = pygame.surfarray.array3d(opening_img)
+        target_arr = opening_arr.copy()
+        tile_w = 40
+        tile_h = 40
+        for ty in range(oh // tile_h):
+            for tx in range(ow // tile_w):
+                sx = tx * tile_w
+                sy = ty * tile_h
+                for py_off in range(tile_h):
+                    for px_off in range(tile_w):
+                        if sx + px_off < ow and sy + py_off < oh:
+                            if np.array_equal(mask_arr[px_off, py_off], bg_color):
+                                target_arr[sx + px_off, sy + py_off] = bg_pixel
+        result = pygame.surfarray.make_surface(target_arr)
+        scaled = pygame.transform.smoothscale(result, (surface.get_width(), surface.get_height()))
         surface.blit(scaled, (0, 0))
